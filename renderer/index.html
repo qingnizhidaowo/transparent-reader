@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data:;">
+  <title>透明网页阅读器</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- 顶部控制层（工具栏空白处可拖动窗口；背景透明模式下底色全透明、保持常显） -->
+    <div id="chrome">
+    <!-- 顶部工具栏（空白处可拖动窗口） -->
+    <header id="toolbar">
+      <button class="tb-btn" id="btn-back" title="后退">
+        <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-forward" title="前进">
+        <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-reload" title="刷新">
+        <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      </button>
+
+      <input id="url" type="text" spellcheck="false" autocomplete="off"
+             placeholder="输入网址回车打开，如 zhihu.com；输入文字则自动搜索">
+
+      <button class="tb-btn wide" id="btn-mode" title="提取正文，切换到阅读模式">阅读</button>
+
+      <div id="opacity-box" title="整窗透明度：数值越低越透明">
+        <span class="mini-label">透明</span>
+        <input id="opacity" type="range" min="10" max="100" step="5" value="40">
+        <span id="opacity-val">40%</span>
+      </div>
+
+      <button class="tb-btn" id="btn-pin" title="窗口置顶（也可在托盘菜单切换）">
+        <svg viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-ghost" title="鼠标穿透：点击穿到底层应用（Ctrl+Alt+T）">
+        <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-textmode" title="背景透明·仅文字：只保留文字，背景完全透明（Ctrl+Alt+G）">
+        <svg viewBox="0 0 24 24"><path d="M5 7V5h14v2"/><path d="M12 5v14"/><path d="M9 19h6"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-hide" title="隐藏到托盘（Ctrl+Alt+H 可随时呼出；鼠标移回原位置也会自动显示）">
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button class="tb-btn danger" id="btn-close" title="退出应用（Ctrl+Alt+Q）">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </header>
+    </div>
+
+    <!-- 内容区 -->
+    <main id="stage">
+      <div id="load-bar"></div>
+
+      <webview id="view" allowpopups></webview>
+
+      <!-- 阅读模式 -->
+      <div id="reader" class="hidden">
+        <div id="reader-bar">
+          <span id="reader-title">阅读模式</span>
+          <button id="font-minus" title="减小字号（Ctrl+Alt+-）">A-</button>
+          <button id="font-plus" title="增大字号（Ctrl+Alt+=）">A+</button>
+          <button id="reader-back">返回网页模式</button>
+        </div>
+        <article id="reader-body"></article>
+        <div id="reader-empty" class="hidden">未能提取到可读正文，请返回网页模式浏览</div>
+      </div>
+
+      <!-- 加载失败 -->
+      <div id="error-pane" class="hidden">
+        <p id="error-text"></p>
+        <button id="btn-retry">重试</button>
+      </div>
+
+      <div id="toast"></div>
+
+      <!-- 背景透明模式下，Windows 透明窗口不支持原生边缘缩放，用右下角拖拽手柄兜底 -->
+      <div id="grip" title="拖动调整窗口大小"></div>
+    </main>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>

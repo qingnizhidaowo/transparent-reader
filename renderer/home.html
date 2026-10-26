@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>开始使用</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1b1e24;
+      color: #ccd3dd;
+      font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+    .wrap { max-width: 620px; margin: 0 auto; padding: 36px 22px 60px; }
+    h1 { font-size: 22px; color: #eef2f8; margin-bottom: 6px; }
+    .sub { color: #7fb0ff; font-size: 13px; margin-bottom: 24px; }
+    .card {
+      background: #20242c;
+      border: 1px solid #2b2f3a;
+      border-radius: 12px;
+      padding: 18px 20px;
+      margin-bottom: 16px;
+    }
+    h2 { font-size: 15px; color: #dfe5ee; margin: 4px 0 10px; }
+    p { margin-bottom: 10px; }
+    p:last-child { margin-bottom: 0; }
+    a { color: #7fb0ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    kbd {
+      background: #14161b;
+      border: 1px solid #333845;
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      padding: 1px 7px;
+      font-size: 12px;
+      font-family: Consolas, monospace;
+      color: #dfe5ee;
+    }
+    table { border-collapse: collapse; width: 100%; }
+    td { padding: 5px 4px; border-bottom: 1px dashed #2b2f3a; vertical-align: top; }
+    td:first-child { white-space: nowrap; width: 130px; }
+    .foot { text-align: center; color: #5b6472; font-size: 12px; margin-top: 26px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>透明网页阅读器</h1>
+    <p class="sub">把任意网页变成可穿透的悬浮透明小窗，摸鱼阅读两不误</p>
+
+    <div class="card">
+      <h2>快速上手</h2>
+      <p>在上方地址栏输入网址后回车即可打开，例如 <a href="https://www.zhihu.com">zhihu.com</a>、<a href="https://www.bilibili.com">bilibili.com</a>；直接输入文字会自动用必应搜索。网页里以「新标签」打开的链接，会直接在本窗口内自动跳转，不会另弹新窗口。</p>
+      <p>拖动工具栏中间的滑块可以实时调节整窗透明度：数值越低越透明。压在文档或表格上偷看时，建议调到 30% 到 50% 之间，既能看清内容又足够低调。点击工具栏的「T」图标或按 <kbd>Ctrl+Alt+G</kbd> 可切换到「背景透明」模式：除文字与图片外一切完全透明，网页内容直接悬浮在壁纸上（保留网页原色与表格线条；网站用 !important 写死的白底和 iframe 里的白底也会被剥掉）。此时工具栏保持常显（底色全透明），拖动窗口拉工具栏空白处，调整大小用右下角手柄。</p>
+      <p>鼠标移出窗口后立即隐藏，没有任何延迟；把鼠标移回窗口原来的位置，它会立刻浮现回来，全程不抢焦点、不打断你手头正在做的操作。</p>
+    </div>
+
+    <div class="card">
+      <h2>全局快捷键</h2>
+      <table>
+        <tr><td><kbd>Ctrl+Alt+G</kbd></td><td>背景透明·仅文字模式：背景全透明，只保留文字</td></tr>
+        <tr><td><kbd>Ctrl+Alt+H</kbd></td><td>手动显示 / 隐藏窗口（手动隐藏后，鼠标扫过不再自动弹出）</td></tr>
+        <tr><td><kbd>Ctrl+Alt+T</kbd></td><td>开启 / 关闭鼠标穿透，开启后点击直接穿到底层应用</td></tr>
+        <tr><td><kbd>Ctrl+Alt+B</kbd></td><td>呼出窗口并聚焦地址栏，随时输入新网址</td></tr>
+        <tr><td><kbd>Ctrl+Alt+ = / -</kbd></td><td>网页缩放；阅读模式下调整为正文字号</td></tr>
+        <tr><td><kbd>Ctrl+Alt+0</kbd></td><td>重置缩放与字号</td></tr>
+        <tr><td><kbd>Ctrl+Alt+Q</kbd></td><td>退出应用</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>两个小技巧</h2>
+      <p>点击工具栏上的「斜杠眼睛」图标开启鼠标穿透后，这个窗口只保留显示、不再拦截任何点击，你可以在底下软件里正常办公，它就像一层悬浮的字幕；按 <kbd>Ctrl+Alt+T</kbd> 可随时切换回可交互状态。</p>
+      <p>点击「阅读」按钮进入阅读模式：自动抓取当前页面的正文，去掉广告、导航和花哨样式，排版成干净长文；识别到小说类内容还会自动首行缩进，看连载更舒服。</p>
+      <p>窗口不占用任务栏：点工具栏的「—」按钮或系统最小化都会直接隐藏到托盘，并暂停"鼠标移回自动弹出"，需要时双击托盘图标、按 <kbd>Ctrl+Alt+H</kbd> 或右键菜单选择显示即可呼出。注意区分：因鼠标移出而自动隐藏的窗口，鼠标移回原位置仍会自动显示。</p>
+    </div>
+
+    <p class="foot">所有数据仅保存在本机 · 祝使用愉快</p>
+    <!-- 冒烟测试用：验证 target=_blank 链接在应用内自动跳转（屏幕外隐藏，正常浏览不可见） -->
+    <a id="smoke-newtab" href="smoke-target.html" target="_blank" style="position:absolute;left:-9999px;top:-9999px">smoke</a>
+  </div>
+</body>
+</html>

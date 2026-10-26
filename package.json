@@ -1,0 +1,14 @@
+{
+  "name": "transparent-reader",
+  "version": "1.4.2",
+  "description": "透明网页阅读器：整窗透明悬浮、鼠标移出自动隐藏/移入自动显示、网页/阅读双模式（摸鱼必备）",
+  "main": "main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "icons": "python3 scripts/gen_icons.py"
+  },
+  "devDependencies": {
+    "electron": "^36.2.0"
+  }
+}
