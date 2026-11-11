@@ -134,8 +134,14 @@
   /* ---------- 工具栏 ---------- */
 
   function bindToolbar() {
-    btnBack.addEventListener('click', () => safe(() => view.goBack()));
-    btnForward.addEventListener('click', () => safe(() => view.goForward()));
+    // v1.5.0：智能后退/前进（主进程统一调度：跳过 SPA 同页垃圾条目；
+    // 原生历史耗尽时用跨会话后退链兜底）；右键后退按钮可直选历史页面
+    btnBack.addEventListener('click', () => safe(() => window.tr.smartBack()));
+    btnBack.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      safe(() => window.tr.showBackMenu());
+    });
+    btnForward.addEventListener('click', () => safe(() => window.tr.smartForward()));
     btnReload.addEventListener('click', () => {
       if (mode === 'web') safe(() => view.reload());
       else toast('阅读模式是提取后的快照，返回网页模式后可刷新');
@@ -306,6 +312,9 @@
       applyStateUi();
     });
 
+    // v1.5.0：后退/前进结果提示（如“没有更早的页面了”“已通过后退链恢复…”）
+    try { window.tr.onNavNotice((msg) => toast(msg, 2200)); } catch (e) { /* ignore */ }
+
     window.tr.onZoom((dir) => {
       if (mode === 'reader') {
         if (dir === 'in') adjustReaderFont(1);
@@ -339,6 +348,12 @@
         urlInput.select();
       } else if (e.key === 'F12') {
         safe(() => window.tr.toggleDevtools());
+      } else if (e.altKey && !e.ctrlKey && !e.metaKey &&
+                 (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        // v1.5.0：宿主（工具栏）焦点时的 Alt+←/→ 智能后退/前进；
+        // guest 内焦点时由主进程 before-input-event 处理
+        e.preventDefault();
+        safe(() => (e.key === 'ArrowLeft' ? window.tr.smartBack() : window.tr.smartForward()));
       }
     });
   }
@@ -386,6 +401,8 @@
       report('round2-start fade=' + state.fade + ' autoHide=' + state.autoHide);
       if (state.fade !== false) return report('FAIL fade-default-on');
 
+      let round2Stage = 0; // 0=恢复页断言 1=等待后退链兜底返回引导页 2=收尾
+
       // 等注入 CSS 生效：背景被剥透，且文字保留原色（smoke-target 内联色为 rgb(204,211,221)；
       // 若被强制改色会变成浅蓝白，据此断言"不强制浅色"）
       const waitGuestCss = async () => {
@@ -405,6 +422,16 @@
       view.addEventListener('dom-ready', async () => {
         let url = '';
         try { url = view.getURL(); } catch (e) { url = view.src || ''; }
+        // v1.5.0：smartBack 链兜底会加载引导页 → 第二次 dom-ready 走此分支收尾
+        if (round2Stage === 1) {
+          if (!/home\.html/.test(url)) return report('FAIL smart-back-chain ' + url);
+          round2Stage = 2;
+          report('smart-back-chain-ok');
+          finishRound2();
+          return;
+        }
+        if (round2Stage !== 0) return; // 防重入：后续 dom-ready 不再跑断言
+
         report(/smoke-target\.html/.test(url) ? 'bgtransparent-restored' : 'FAIL restore-url ' + url);
 
         // v1.4：应用自身 UI 全透明断言（除文字/图片外一切透明）
@@ -463,6 +490,14 @@
           report('capture-skip ' + (px && px.reason));
         }
 
+      // v1.5.0：重建窗口后原生历史只剩 1 条 → smartBack 应回退到上一页面（后退链兜底）
+        report('smart-back-chain-pending');
+        round2Stage = 1;
+        window.tr.smartBack();
+        setTimeout(() => { if (round2Stage === 1) report('FAIL smart-back-chain-timeout'); }, 8000);
+      });
+
+      function finishRound2() {
         // v1.3：最小化到托盘 → 暂停移入自动显示（双击托盘才弹出）
         window.tr.minimizeToTray();
         setTimeout(async () => {
@@ -472,8 +507,8 @@
           report(s3.autoShowEnabled === false ? 'autoshow-suspended-ok' : 'FAIL autoshow-not-suspended');
           report('ALL-PASS');
         }, 700);
-      });
-      setTimeout(() => report('FAIL round2-timeout'), 15000);
+      }
+      setTimeout(() => report('FAIL round2-timeout'), 22000);
       return;
     }
 
@@ -504,15 +539,53 @@
       if (stage === 1 && /smoke-target\.html/.test(e.url || '')) {
         stage = 2;
         report('newtab-inapp-nav ' + e.url);
+
+        // v1.5.0 用例①：SPA pushState 刷栈（hash churn 6 条同页）→ 主进程去膨胀折叠
+        try {
+          await view.executeJavaScript('for(var i=0;i<5;i++)history.pushState(null,"","#junk"+i); "ok"', true);
+        } catch (err) { return report('FAIL bloat-spam-threw ' + (err && err.message)); }
+        await new Promise((res) => setTimeout(res, 3200)); // 清理防抖 1.2s + 执行余量
+        let gh = null;
+        try { gh = await window.tr.getGuestHistory(); } catch (err) { gh = null; }
+        if (!gh || !gh.ok) return report('FAIL get-guest-history ' + JSON.stringify(gh));
+        const keys = gh.entries.map((en) => {
+          try { const u = new URL(en.url); return u.origin + u.pathname; } catch (err) { return en.url; }
+        });
+        let run = 1, maxRun = 1;
+        for (let i = 1; i < keys.length; i++) { run = keys[i] === keys[i - 1] ? run + 1 : 1; if (run > maxRun) maxRun = run; }
+        if (maxRun > 2) return report('FAIL history-not-debloated maxRun=' + maxRun + ' n=' + keys.length);
+        report('history-debloated-ok entries=' + keys.length + ' maxRun=' + maxRun);
+
+        // v1.5.0 用例②：智能后退——跳过同页条目直达引导页，再前进回来
+        window.tr.smartBack();
+        let backUrl = '';
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 150));
+          try { backUrl = view.getURL(); } catch (err) { backUrl = ''; }
+          if (/home\.html/.test(backUrl)) break;
+        }
+        if (!/home\.html/.test(backUrl)) return report('FAIL smart-back-native ' + backUrl);
+        report('smart-back-native-ok');
+
+        window.tr.smartForward();
+        let fwdUrl = '';
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 150));
+          try { fwdUrl = view.getURL(); } catch (err) { fwdUrl = ''; }
+          if (/smoke-target\.html/.test(fwdUrl)) break;
+        }
+        if (!/smoke-target\.html/.test(fwdUrl)) return report('FAIL smart-forward ' + fwdUrl);
+        report('smart-forward-ok');
+
         window.tr.setOpacity(0.55);
         report('set-opacity-sent');
         // 验证 v1.2 修复项：切换到背景透明模式（主进程会重建窗口，本页面随之销毁）
         report('toggling-bg-transparent');
-        try { await window.tr.setBgTransparent(true); } catch (e) { /* 页面销毁，预期 */ }
+        try { await window.tr.setBgTransparent(true); } catch (err) { /* 页面销毁，预期 */ }
       }
     });
 
-    setTimeout(() => report('FAIL renderer-timeout'), 15000);
+    setTimeout(() => report('FAIL renderer-timeout'), 25000);
   }
 
   init();

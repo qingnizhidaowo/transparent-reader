@@ -28,6 +28,17 @@
  *  背景透明模式下工具栏保持常显（仅底色透明），输网址、点按钮无需先呼出；
  *  顶部 6px 拖拽细条随之移除（拖动窗口直接拉工具栏空白处，与普通模式一致）。
  *
+ * v1.5.0 变更（后退失效修复）:
+ *  粉笔等考试 SPA 页“停留一段时间后，页面内后退与工具栏后退全部失灵”的三重根因：
+ *   ① 页面自身后退按钮要等答案/学时上报 HTTP 成功才调 history.back()，会话过期
+ *      请求失败就永远不退（站点自身的 bug，无法替它修）；
+ *   ② 应用重启/切换背景透明重建窗口后，webview 直接加载恢复地址，原生历史栈只有
+ *      一条记录，goBack() 无处可退；
+ *   ③ 其他站点可能用 pushState 刷同页条目，让每次后退只退到同页上一状态。
+ *  修复：智能后退（跳过同页垃圾条目直达上一页面）+ 跨会话持久化后退链（重启/重建
+ *  后兜底）+ 历史去膨胀（连续同页 ≥6 条折叠为 1）+ Alt+←/→ 快捷键 + 后退按钮
+ *  右键历史菜单。无论 ①②③ 哪种情况，用户都有可靠的离开手段。
+ *
  *  1. 「背景透明·仅文字」模式：真 transparent 窗口 + 向网页注入 CSS 剥离背景，
  *     文字保持 100% 不透明（问题1）。transparent 无法运行时切换，采用销毁重建窗口。
  *  2. 最小化到托盘：工具栏「—」立即隐藏到托盘（不暂停移入自动显示）；
@@ -42,6 +53,7 @@
 const { app, BrowserWindow, Tray, Menu, globalShortcut, screen, ipcMain, shell, nativeImage, WebFrameMain } = require('electron');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const fs = require('fs');
 
 const APP_DIR = __dirname;
 const IS_SMOKE = !!process.env.SMOKE; // 无头冒烟测试模式
@@ -83,6 +95,9 @@ const state = {
 let autoShowEnabled = true; // 手动隐藏后暂停自动显示，直到再次手动显示
 let typing = false;         // 渲染进程正在输入网址（此时不自动隐藏）
 let guestWC = null;         // 当前 webview 的 guest webContents（注入/像素采样用）
+let backChain = [];         // v1.5.0 跨会话后退链（去重后），重启/重建窗口后兜底后退
+let navSaveTimer = null;    // 后退链落盘防抖
+let bloatCleanTimer = null; // 历史去膨胀防抖
 
 /* ==================== 网页背景剥离（v1.4.1） ==================== */
 
@@ -136,6 +151,174 @@ let lastMoveAt = 0;         // 最近一次窗口拖动
 
 function log(...args) {
   if (IS_SMOKE || process.env.TR_VERBOSE) console.log('[TR]', ...args);
+}
+
+/* ==================== 智能后退 & 历史治理（v1.5.0） ==================== */
+
+// 页面标识：origin + pathname（忽略查询串/hash）——同 key 视为“同一页面”，
+// 后退时跳过、历史里折叠。粉笔解析页反复改 curQKey 查询串即属此类。
+function pageKey(url) {
+  try { const u = new URL(url); return u.origin + u.pathname; }
+  catch (e) { return String(url || ''); }
+}
+
+function navFile() { return path.join(app.getPath('userData'), 'reader-nav.json'); }
+
+function loadBackChain() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(navFile(), 'utf8'));
+    if (raw && Array.isArray(raw.chain)) {
+      backChain = raw.chain
+        .filter((x) => x && typeof x.url === 'string' && /^(https?|file):/i.test(x.url))
+        .slice(-40);
+    }
+  } catch (e) { /* 首次运行/文件损坏：从空链开始 */ }
+  log('back-chain loaded:', backChain.length);
+}
+
+function saveBackChain() {
+  clearTimeout(navSaveTimer);
+  navSaveTimer = setTimeout(() => {
+    try { fs.writeFileSync(navFile(), JSON.stringify({ chain: backChain.slice(-40), at: Date.now() })); }
+    catch (e) { log('back-chain save failed:', e.message); }
+  }, 500);
+}
+
+// 浏览过的页面进链：同页（origin+path 相同）只保留最新地址（剥 hash，保查询串），
+// 链长上限 40。引导页 home.html 也进链——重启后“后退”应能回到它，与不重启时一致。
+// 注意：file:// URL 的 u.origin 是字符串 "null"，必须按协议单独拼，否则链内地址无效。
+function pushBackChain(url) {
+  if (typeof url !== 'string' || !/^(https?|file):/i.test(url)) return;
+  let clean = url;
+  try {
+    const u = new URL(url);
+    clean = (u.protocol === 'file:' ? 'file://' : u.origin) + u.pathname + u.search;
+  } catch (e) { /* keep */ }
+  const key = pageKey(clean);
+  const last = backChain[backChain.length - 1];
+  if (last && pageKey(last.url) === key) { last.url = clean; last.at = Date.now(); }
+  else backChain.push({ url: clean, at: Date.now() });
+  if (backChain.length > 40) backChain = backChain.slice(-40);
+  saveBackChain();
+}
+
+// 安全读取 guest 原生历史栈（Electron 36 navigationHistory API）
+function getGuestNav() {
+  if (!guestWC || guestWC.isDestroyed()) return null;
+  try {
+    const nh = guestWC.navigationHistory;
+    return { nh, entries: nh.getAllEntries(), active: nh.getActiveIndex() };
+  } catch (e) { return null; }
+}
+
+// 历史去膨胀：连续同页条目 ≥6 折叠为最靠近 active 的一条（防站点 pushState/hash
+// churn 刷栈——那样每次后退都只退到同页上一状态，表现为“后退失灵”）。
+function cleanBloatedHistory() {
+  const nav = getGuestNav();
+  if (!nav || !nav.entries.length) return;
+  const { nh, entries, active } = nav;
+  const toRemove = [];
+  let i = 0;
+  while (i < entries.length) {
+    let j = i;
+    const key = pageKey(entries[i].url);
+    while (j < entries.length && pageKey(entries[j].url) === key) j++;
+    if (j - i >= 6) {
+      const keep = (active >= i && active < j) ? active : j - 1; // 保留 active 或 run 内最近一条
+      for (let t = j - 1; t >= i; t--) if (t !== keep && t !== active) toRemove.push(t);
+    }
+    i = j;
+  }
+  let removed = 0;
+  for (const idx of toRemove.sort((a, b) => b - a)) { // 高索引先删，避免索引位移
+    try { if (nh.removeEntryAtIndex(idx)) removed++; } catch (e) { /* ignore */ }
+  }
+  if (removed) log('history debloated: removed', removed, 'entries');
+}
+
+function scheduleBloatClean() {
+  clearTimeout(bloatCleanTimer);
+  bloatCleanTimer = setTimeout(cleanBloatedHistory, 1200);
+}
+
+// 智能后退：①原生历史里跳过同页条目，直达上一个“不同页面”；②原生历史耗尽
+// （重启/重建窗口后只有一条）时用跨会话后退链 loadURL 兜底；③都没有则提示。
+function smartBack() {
+  const nav = getGuestNav();
+  if (nav) {
+    const curKey = pageKey((nav.entries[nav.active] || {}).url || '');
+    for (let i = nav.active - 1; i >= 0; i--) {
+      const key = pageKey(nav.entries[i].url);
+      if (key && key !== curKey) {
+        try { nav.nh.goToIndex(i); return { ok: true, via: 'history', url: nav.entries[i].url }; }
+        catch (e) { break; } // goToIndex 失败 → 退回普通 goBack / 链兜底
+      }
+    }
+    try { if (nav.nh.canGoBack()) { nav.nh.goBack(); return { ok: true, via: 'history' }; } } catch (e) { /* ignore */ }
+  }
+  let cur = '';
+  try { cur = (guestWC && !guestWC.isDestroyed()) ? guestWC.getURL() : ''; } catch (e) { /* ignore */ }
+  const curKey = pageKey(cur);
+  for (let i = backChain.length - 1; i >= 0; i--) {
+    const key = pageKey(backChain[i].url);
+    if (key && key !== curKey) {
+      const url = backChain[i].url;
+      try { Promise.resolve(guestWC.loadURL(url)).catch(() => {}); } catch (e) { return { ok: false }; }
+      return { ok: true, via: 'chain', url };
+    }
+  }
+  return { ok: false };
+}
+
+function smartForward() {
+  const nav = getGuestNav();
+  if (nav) {
+    try { if (nav.nh.canGoForward()) { nav.nh.goForward(); return { ok: true }; } } catch (e) { /* ignore */ }
+  }
+  try { if (guestWC && !guestWC.isDestroyed() && guestWC.canGoForward()) { guestWC.goForward(); return { ok: true }; } } catch (e) { /* ignore */ }
+  return { ok: false };
+}
+
+function notifyBackResult(r, backWord) {
+  if (!r || !r.ok) sendToRenderer('nav-notice', backWord ? '没有更早的页面了' : '前面没有更多页面');
+  else if (r.via === 'chain') sendToRenderer('nav-notice', '原生历史已耗尽，已通过后退链恢复上一页面');
+}
+
+// 后退按钮右键：最近浏览过的“不同页面”列表（原生历史 + 持久链合并去重，最多 8 项）
+function showBackMenu() {
+  const items = [];
+  const seen = new Set();
+  let curKey = '';
+  const nav = getGuestNav();
+  if (nav) curKey = pageKey((nav.entries[nav.active] || {}).url || '');
+  const push = (url, index) => {
+    const key = pageKey(url);
+    if (!key || key === curKey || seen.has(key)) return;
+    seen.add(key);
+    let label = url;
+    try {
+      const u = new URL(url);
+      const site = u.protocol === 'file:' ? '本地页面' : (u.hostname || u.protocol);
+      label = site + (u.pathname !== '/' ? ' ' + decodeURIComponent(u.pathname).slice(-36) : '');
+    } catch (e) { /* keep url */ }
+    items.push({ label, index, url });
+  };
+  if (nav) for (let i = nav.active - 1; i >= 0 && items.length < 8; i--) push(nav.entries[i].url, i);
+  for (let i = backChain.length - 1; i >= 0 && items.length < 8; i--) push(backChain[i].url, -1);
+  if (!items.length) { sendToRenderer('nav-notice', '没有可回退的历史页面'); return; }
+  const tpl = items.map((it) => ({
+    label: it.label,
+    click: () => {
+      const n2 = getGuestNav();
+      // 首选 goToIndex（保留 SPA 页面状态），索引失效或条目已变则 loadURL
+      if (it.index >= 0 && n2 && n2.entries[it.index] &&
+          pageKey(n2.entries[it.index].url) === pageKey(it.url)) {
+        try { n2.nh.goToIndex(it.index); return; } catch (e) { /* fallback */ }
+      }
+      try { if (guestWC && !guestWC.isDestroyed()) Promise.resolve(guestWC.loadURL(it.url)).catch(() => {}); } catch (e) { /* ignore */ }
+    }
+  }));
+  try { Menu.buildFromTemplate(tpl).popup({ window: win }); } catch (e) { log('back-menu failed:', e.message); }
 }
 
 /* ==================== 窗口 ==================== */
@@ -222,7 +405,22 @@ function createWindow() {
         return { action: 'deny' };
       });
     } catch (err) { log('setWindowOpenHandler failed:', err.message); }
-    guest.on('before-input-event', () => { lastGuestKeyAt = Date.now(); });
+    guest.on('before-input-event', (e, input) => {
+      lastGuestKeyAt = Date.now();
+      // v1.5.0：guest 内焦点时 Alt+←/→ = 智能后退/前进（即使页面自己的后退按钮
+      // 被它的上报请求卡死，也总有一条离开通道）
+      if (input && input.type === 'keyDown' && input.alt && !input.control && !input.meta &&
+          (input.key === 'ArrowLeft' || input.key === 'ArrowRight')) {
+        e.preventDefault();
+        const back = input.key === 'ArrowLeft';
+        const r = back ? smartBack() : smartForward();
+        notifyBackResult(r, back);
+      }
+    });
+    // v1.5.0：SPA 同页垃圾条目（pushState/hash/查询串 churn）防抖折叠；
+    // did-navigate 也排一次，覆盖对同一地址反复 loadURL 的情况
+    guest.on('did-navigate-in-page', scheduleBloatClean);
+    guest.on('did-navigate', scheduleBloatClean);
     log('webview attached');
   });
 
@@ -585,7 +783,24 @@ function bindIpc() {
   ipcMain.on('minimize-to-tray', () => hideToTray());
   ipcMain.on('resize-by', (_e, dx, dy) => resizeBy(dx, dy));
   ipcMain.on('report-url', (_e, url) => {
-    if (typeof url === 'string' && /^(https?|file):/i.test(url) && url !== HOME_URL) lastPageUrl = url;
+    if (typeof url === 'string' && /^(https?|file):/i.test(url)) {
+      if (url !== HOME_URL) lastPageUrl = url;
+      pushBackChain(url); // v1.5.0：进跨会话后退链（含引导页；同页折叠，仅保最新地址）
+    }
+  });
+
+  // v1.5.0：智能后退/前进 + 右键历史菜单 + guest 历史读取（冒烟断言用）
+  ipcMain.on('smart-back', () => notifyBackResult(smartBack(), true));
+  ipcMain.on('smart-forward', () => notifyBackResult(smartForward(), false));
+  ipcMain.on('show-back-menu', () => showBackMenu());
+  ipcMain.handle('get-guest-history', () => {
+    const nav = getGuestNav();
+    if (!nav) return { ok: false };
+    return {
+      ok: true,
+      entries: nav.entries.map((en) => ({ url: en.url, title: en.title })),
+      activeIndex: nav.active
+    };
   });
   ipcMain.on('open-external', (_e, url) => { if (/^https?:/i.test(url)) shell.openExternal(url); });
   ipcMain.on('toggle-devtools', () => { if (win && !win.isDestroyed()) win.webContents.toggleDevTools(); });
@@ -607,6 +822,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     if (process.platform === 'darwin') { try { app.dock.hide(); } catch (e) { /* ignore */ } }
+    loadBackChain(); // v1.5.0：恢复跨会话后退链（重启后“后退”依然可用）
     bindIpc();
     createWindow();
     createTray();
@@ -614,7 +830,7 @@ if (!gotLock) {
     startPoller();
     log('app started, platform=' + process.platform);
     if (IS_SMOKE) {
-      setTimeout(() => { console.error('[SMOKE] TIMEOUT-EXIT'); app.exit(1); }, 30000);
+      setTimeout(() => { console.error('[SMOKE] TIMEOUT-EXIT'); app.exit(1); }, 45000);
     }
   });
 
